@@ -47,7 +47,7 @@ export async function POST(request: Request) {
   let convertedAudioPath: string | null = null;
 
   try {
-    const { url } = await request.json()
+    const { url, quizSize } = await request.json()
 
     if (!url) {
       return NextResponse.json(
@@ -123,29 +123,78 @@ export async function POST(request: Request) {
       messages: [
         {
           role: 'system',
-          content: 'You are a helpful AI that generates quiz questions based on video transcripts. Generate 5 multiple-choice questions with 4 options each. Format the response as a JSON array of objects, where each object has a "question", "options" (array of 4 strings), and "correctAnswer" (index of correct option, 0-based) properties.',
+          content: `You are a quiz generator. Create ${quizSize} multiple-choice questions based on the provided transcript. 
+          Return ONLY a JSON array of objects with this exact structure:
+          [
+            {
+              "question": "string",
+              "options": ["string", "string", "string", "string"],
+              "correctAnswer": number (0-3)
+            }
+          ]`,
         },
         {
           role: 'user',
           content: transcription.text,
         },
       ],
-    })
+    });
 
-    // Clean up temporary files
-    console.log('Cleaning up temporary files...')
-    if (audioPath && fs.existsSync(audioPath)) {
-      fs.unlinkSync(audioPath)
+    // Log the raw response for debugging
+    console.log('GPT-4 Response:', completion.choices[0].message.content);
+
+    try {
+      // Clean up temporary files
+      console.log('Cleaning up temporary files...');
+      if (audioPath && fs.existsSync(audioPath)) {
+        fs.unlinkSync(audioPath);
+      }
+      if (convertedAudioPath && fs.existsSync(convertedAudioPath)) {
+        fs.unlinkSync(convertedAudioPath);
+      }
+
+      // Parse the quiz questions from the GPT-4 response
+      const content = completion.choices[0].message.content || '[]';
+      let quizQuestions;
+      try {
+        quizQuestions = JSON.parse(content);
+        // Validate the structure
+        if (!Array.isArray(quizQuestions) || !quizQuestions.every(q => 
+          q.question && 
+          Array.isArray(q.options) && 
+          q.options.length === 4 && 
+          typeof q.correctAnswer === 'number'
+        )) {
+          throw new Error('Invalid quiz question format');
+        }
+      } catch (parseError) {
+        console.error('JSON Parse Error:', parseError);
+        console.error('Raw Content:', content);
+        throw new Error('Failed to parse quiz questions');
+      }
+
+      console.log('Quiz generation complete');
+      return NextResponse.json({ questions: quizQuestions });
+    } catch (error) {
+      console.error('Error generating quiz:', error)
+      
+      // Clean up temporary files in case of error
+      try {
+        if (audioPath && fs.existsSync(audioPath)) {
+          fs.unlinkSync(audioPath)
+        }
+        if (convertedAudioPath && fs.existsSync(convertedAudioPath)) {
+          fs.unlinkSync(convertedAudioPath)
+        }
+      } catch (cleanupError) {
+        console.error('Error cleaning up files:', cleanupError)
+      }
+
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Failed to generate quiz' },
+        { status: 500 }
+      )
     }
-    if (convertedAudioPath && fs.existsSync(convertedAudioPath)) {
-      fs.unlinkSync(convertedAudioPath)
-    }
-
-    // Parse the quiz questions from the GPT-4 response
-    const quizQuestions = JSON.parse(completion.choices[0].message.content || '[]')
-    console.log('Quiz generation complete')
-
-    return NextResponse.json({ questions: quizQuestions })
   } catch (error) {
     console.error('Error generating quiz:', error)
     
